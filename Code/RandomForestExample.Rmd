@@ -54,6 +54,12 @@ otu_table(ps_rarefied)[1:5,1:5] # otu table
 tax_table(ps_rarefied)[1:5,] # taxonomy 
 ps_rarefied@sam_data [1:5,1:5]# metadata
 
+#let's take a quick look on an oridnation for the species in this dataset
+plot_ordination(ps_rarefied, 
+                ordination = ordinate(ps_rarefied, "NMDS", "bray"),
+                type="samples", 
+                color="Sp_full_name")+ theme_bw()
+
 
 ``` 
 
@@ -68,7 +74,7 @@ df_for_boruta_sp<-single_physeq_to_borutaInput(physeq_object = ps_rarefied,
                                              variable_to_be_classified = "Sp_full_name")[,-1] # removes first column, "sample" as a predictor variabl
 
 #check the object you have
-df_for_boruta_sp[1:10,1:10]
+df_for_boruta_sp[45:55,1:10]
 str(df_for_boruta_sp)
 
 #are tehre any NAs?
@@ -76,7 +82,7 @@ any(is.na(df_for_boruta_sp))
 
 #is the first column a factor?
 is.factor(df_for_boruta_sp[,1])
-
+df_for_boruta_sp[,1]
 
 ```
 
@@ -86,11 +92,11 @@ on a 2016 HP Zbook (4 cores, 16GB ram) this takes ~ 40 sec
 ```{r}
 
 set.seed(101) # set a fixed seed to have reproducible results
-boruta_output_sp<-  Boruta(Sp_full_name~.,   # classification you are trying to predict
+boruta_output_sp<-  Boruta(Sp_full_name~.,   # classification to predict
                            data = df_for_boruta_sp, # your df with the variable you want to predict
-                           doTrace=2, # define verbosity level
-                           maxRuns = 100,  #increase the maximum number of runs to decrease the number of tenttively important OTUs.
-                           ntree = 2000) # increase the number of trees to increase precision. decrease ntree/maxruns to reduce computational time.
+                           doTrace=2, #  verbosity level
+                           maxRuns = 100,  # number of iterations
+                           ntree = 2000) # size of the forest 
 
 ```
 
@@ -104,13 +110,13 @@ boruta_output_sp
 #here you see the importance fo each feature. features with higher importance are better at predicting classifications than features with lwoer importance
 attStats(boruta_output_sp)
 
-# check a boxplot fo feature importance
+# check a boxplot of feature importance
 plot(boruta_output_sp)
 
 # check feature imortance over itetations
 plotImpHistory(boruta_output_sp)
 
-# you can force a solution to tentative features, useful if you dont want to re-run boruta with a higher numebr of runs
+# you can force a solution to tentative features
 boruta_output_sp_fixed<-TentativeRoughFix(boruta_output_sp)
 
 # you can now get the features intoa  formula format
@@ -132,7 +138,7 @@ rf_importance_byASV <-
 
 
 #there are still too many ASVs. let's pick only the top 10 best predictors
-rf_importance_byASV_filtered<-rf_importance_byASV[order(rf_importance_byASV$meanImp),][1:10,]
+rf_importance_byASV_filtered<-rf_importance_byASV[order(-rf_importance_byASV$meanImp),][1:10,]
 
 #make ps object that only contains RF-imporantt ASVs
 rf_important_ps<-
@@ -167,7 +173,8 @@ ggplot(data = rf_ASVs_df, aes(x = OTU, y = Abundance, fill = Sp_full_name)) +
 
 There are many ways to carefully split your data according your experiemntal design. here we will simply ballance according species
 ```{r}
- # define training and test set. this can be ofptimized for repeated k-fold cross validation
+
+ # define training and test set. 
   trainIndex<- createDataPartition(df_for_boruta_sp[,1], 
                                    p = .70, 
                                    list = FALSE, 
@@ -177,7 +184,8 @@ There are many ways to carefully split your data according your experiemntal des
   data_Test  <- df_for_boruta_sp [-trainIndex,]
   
   #check training and testing sets
-  data_Train[1:10]
+  data_Train[30:40,1:10]
+  data_Test[30:40,1:10]
   str(data_Test)
 
 ```
@@ -188,15 +196,15 @@ There are many ways to carefully split your data according your experiemntal des
 Boruta found the  most important features, but it won't classify new data for you. you have to train the random forest with those boruta-selected features make amodel and test it
 ```{r}
 # define training with 5-folde cross validation repeated 10 times
-train.control <- caret::trainControl(method = "repeatedcv", # set trainig/data split controls for the train function
+train.control <- caret::trainControl(method = "repeatedcv", # set trainig/data split 
                                      number = 5,
                                      repeats = 10,
                                      allowParallel = TRUE)
     
-#train teh model. as we are only using a small forest with 500 trees, it only takse a minute
-model_borutized <- caret::train(form = boruta_output_sp_fixed_formula, # bruta formula
-                                data = data_Train, # training data ; first element of train_and_test_spliter()
-                                method = "rf", #execute training based on RF
+#train the model. A small forest with 500 trees takes only a minute
+model_borutized <- caret::train(form = boruta_output_sp_fixed_formula, # boruta formula
+                                data = data_Train, # training data
+                                method = "rf", #  training based on RF
                                 trControl = train.control, # defined in trainControl() above
                                 ntree=500) # the more trees, the more precision
 
@@ -228,32 +236,38 @@ confusion_output
 # streamlining the process
 
 ```{r}
-t0<-Sys.time()
-# split the original object by species
+
+# this challange should be more difficult, based on the plot
+plot_ordination(ps_rarefied, 
+                ordination = ordinate(ps_rarefied, "NMDS", "bray"),
+                type="samples", 
+                color="Stress",
+                shape = "greenhouse_compartment")+ theme_bw()
+
+
+
+# split the original object by greenhouse comaprtment
 ps_sp_l<-  phyloseq_sep_variable(ps_rarefied,variable = c("greenhouse_compartment"))
 
-#### Bacterial communities 
-
+# run boruta on both sample sets
 set.seed(101)
-Boruta_stress_l<-lapply(ps_sp_l, function (x) #parLapply wil do a parallel lapply on the defined cluster
+Boruta_stress_l<-lapply(ps_sp_l, function (x) 
   Boruta(Stress~.,   # classification you are trying to predict
-         data = single_physeq_to_borutaInput(physeq_object = x,
-                                             variable_to_be_classified = "Stress")[,-1], # removes first column, "sample" as a predictor variable
-         doTrace=0, 
-         maxRuns = 200,  #increase the maximum number of runs to decrease the number of tenttively important OTUs.
-         ntree = 10000)) # increase the number of trees to increase precision. decrease ntree/maxruns to reduce computational time.
+         data = single_physeq_to_borutaInput(physeq_object = x, # df you will give to boruta
+                                             variable_to_be_classified = "Stress")[,-1],
+         doTrace=2, 
+         maxRuns = 200,  # number fo iterations
+         ntree = 10000)) # size of the forest
 
-#this is your list of boruta outputs
-Boruta_stress_l
 
 ```
 
 ```{r}
-# fix the boruta object, split the training and test sets, train the model and then test the model on a single function
+# fix the boruta object, split training and test data, train the model, test the model 
 CV_output<-fix_split_train_test(boruta_output_l = Boruta_stress_l,
                                 ps_object_l = ps_sp_l,
                                 variable_to_be_classified = "Stress" )
 
-     t1<-Sys.time()
+     
 ```
 
