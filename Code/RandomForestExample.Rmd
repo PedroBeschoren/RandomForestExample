@@ -1,0 +1,259 @@
+---
+title: "RandomForestExample"
+author: "Pedro Beschoren da Costa"
+date: "2023-06-07"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+
+```{r, setup, include=FALSE}
+### you can safely ignore this chunk as a workshop participant ###
+
+# this an an R markdown option for knitting documents, because working directory changes automatically in chunks. if you want details, check https://bookdown.org/yihui/rmarkdown-cookbook/working-directory.html
+knitr::opts_knit$set(root.dir = '../')
+```
+
+
+# install all packages using renv, load libraries
+
+
+```{r}
+#renv is a package that helps you manage your packages
+
+#load packages
+library(phyloseq)
+library(Boruta)
+library(caret)
+library(dplyr)
+library(tibble)
+library(ranger)
+library(metagMisc)
+library(purrr)
+
+#laod a bunch fo custom functions that will helps us
+source("./Code/Machine_Learning_custom_functions.R")
+```
+
+
+# load microbiome data as a phyloseq object
+
+a phyloseq object is only a data container, with layers for the feature table (ASVs/OTUs), microbial taxonomies, sample metadata, and reference sequences. 
+
+
+```{r}
+# load object
+load("./Data/ps_rarefied.Rdata")
+
+#check ps object
+ps_rarefied # full ps object
+otu_table(ps_rarefied)[1:5,1:5] # otu table 
+tax_table(ps_rarefied)[1:5,] # taxonomy 
+ps_rarefied@sam_data [1:5,1:5]# metadata
+
+
+``` 
+
+# put data into a format boruta will udenrstand
+for classification tasks in borutas, the most critical part of the df is having the variable that you want to predict as a factor. also, make sure you don't ahve NAs, NaN, or empty values in your df
+"Sp_full_name"
+```{r}
+
+
+# put that microbiome data into a df format that boruta will understand
+df_for_boruta_sp<-single_physeq_to_borutaInput(physeq_object = ps_rarefied,
+                                             variable_to_be_classified = "Sp_full_name")[,-1] # removes first column, "sample" as a predictor variabl
+
+#check the object you have
+df_for_boruta_sp[1:10,1:10]
+str(df_for_boruta_sp)
+
+#are tehre any NAs?
+any(is.na(df_for_boruta_sp))
+
+#is the first column a factor?
+is.factor(df_for_boruta_sp[,1])
+
+
+```
+
+# run boruta
+
+on a 2016 HP Zbook (4 cores, 16GB ram) this takes ~ 40 sec
+```{r}
+
+set.seed(101) # set a fixed seed to have reproducible results
+boruta_output_sp<-  Boruta(Sp_full_name~.,   # classification you are trying to predict
+                           data = df_for_boruta_sp, # your df with the variable you want to predict
+                           doTrace=2, # define verbosity level
+                           maxRuns = 100,  #increase the maximum number of runs to decrease the number of tenttively important OTUs.
+                           ntree = 2000) # increase the number of trees to increase precision. decrease ntree/maxruns to reduce computational time.
+
+```
+
+
+# check boruta object
+```{r}
+
+# this is out obruta object
+boruta_output_sp
+
+#here you see the importance fo each feature. features with higher importance are better at predicting classifications than features with lwoer importance
+attStats(boruta_output_sp)
+
+# check a boxplot fo feature importance
+plot(boruta_output_sp)
+
+# check feature imortance over itetations
+plotImpHistory(boruta_output_sp)
+
+# you can force a solution to tentative features, useful if you dont want to re-run boruta with a higher numebr of runs
+boruta_output_sp_fixed<-TentativeRoughFix(boruta_output_sp)
+
+# you can now get the features intoa  formula format
+boruta_output_sp_fixed_formula<-getConfirmedFormula(boruta_output_sp_fixed)
+
+
+```
+
+
+
+#plot abudnance of ASVs that are good predictos
+
+```{r}
+
+# get boruta stats of ASVs confirmed to be important
+rf_importance_byASV <- 
+  filter(attStats(boruta_output_sp_fixed), decision == "Confirmed") %>%
+    tibble::rownames_to_column(var = "OTU")
+
+
+#there are still too many ASVs. let's pick only the top 10 best predictors
+rf_importance_byASV_filtered<-rf_importance_byASV[order(rf_importance_byASV$meanImp),][1:10,]
+
+#make ps object that only contains RF-imporantt ASVs
+rf_important_ps<-
+  prune_taxa(taxa = rf_importance_byASV_filtered$OTU,x = ps_rarefied)
+
+# turn ps object into a dataframe
+melted_ps <- psmelt(rf_important_ps)
+
+# join melted ps object created above with the boruta stats
+rf_ASVs_df <- 
+  left_join(melted_ps, rf_importance_byASV_filtered)
+
+# quick plot bar with relative abudances, for a quick overview of  data
+ggplot(data = rf_ASVs_df, aes(x = OTU, y = Abundance, fill = Sp_full_name)) +
+    geom_boxplot(aes()) +
+    theme_bw() +
+    theme(axis.title = element_text(size = 13, face = "bold")) +
+    theme(
+      panel.border = element_blank(), panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")
+    ) +
+    theme(axis.text = element_text(size = 10, face = "bold", colour = "black")) +
+    theme(axis.title.x = element_blank()) +
+    geom_line(data = rf_ASVs_df, aes(x = OTU, y = meanImp), size = 2) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+```
+
+
+
+# check precision in the predicion of our model with caret
+
+There are many ways to carefully split your data according your experiemntal design. here we will simply ballance according species
+```{r}
+ # define training and test set. this can be ofptimized for repeated k-fold cross validation
+  trainIndex<- createDataPartition(df_for_boruta_sp[,1], 
+                                   p = .70, 
+                                   list = FALSE, 
+                                   times = 1)
+  # set train and test sets
+  data_Train <- df_for_boruta_sp [ trainIndex,]
+  data_Test  <- df_for_boruta_sp [-trainIndex,]
+  
+  #check training and testing sets
+  data_Train[1:10]
+  str(data_Test)
+
+```
+
+
+
+# train the model
+Boruta found the  most important features, but it won't classify new data for you. you have to train the random forest with those boruta-selected features make amodel and test it
+```{r}
+# define training with 5-folde cross validation repeated 10 times
+train.control <- caret::trainControl(method = "repeatedcv", # set trainig/data split controls for the train function
+                                     number = 5,
+                                     repeats = 10,
+                                     allowParallel = TRUE)
+    
+#train teh model. as we are only using a small forest with 500 trees, it only takse a minute
+model_borutized <- caret::train(form = boruta_output_sp_fixed_formula, # bruta formula
+                                data = data_Train, # training data ; first element of train_and_test_spliter()
+                                method = "rf", #execute training based on RF
+                                trControl = train.control, # defined in trainControl() above
+                                ntree=500) # the more trees, the more precision
+
+#check the trained model
+model_borutized
+
+#check your confusion matrix. keep in mind thsi was your traiing set! you should test the model in a new datset the trainer has not seen
+confusionMatrix(data =model_borutized )
+
+```
+
+
+#test the model
+
+```{r}
+
+#predict the labels of your test set
+prediction<-stats::predict(object = model_borutized,
+                           newdata = data_Test) 
+
+#check if predictions match the true labels
+confusion_output<-confusionMatrix(data = prediction, 
+                                  reference = data_Test[,1])
+ 
+confusion_output
+```
+
+
+# streamlining the process
+
+```{r}
+t0<-Sys.time()
+# split the original object by species
+ps_sp_l<-  phyloseq_sep_variable(ps_rarefied,variable = c("greenhouse_compartment"))
+
+#### Bacterial communities 
+
+set.seed(101)
+Boruta_stress_l<-lapply(ps_sp_l, function (x) #parLapply wil do a parallel lapply on the defined cluster
+  Boruta(Stress~.,   # classification you are trying to predict
+         data = single_physeq_to_borutaInput(physeq_object = x,
+                                             variable_to_be_classified = "Stress")[,-1], # removes first column, "sample" as a predictor variable
+         doTrace=0, 
+         maxRuns = 200,  #increase the maximum number of runs to decrease the number of tenttively important OTUs.
+         ntree = 10000)) # increase the number of trees to increase precision. decrease ntree/maxruns to reduce computational time.
+
+#this is your list of boruta outputs
+Boruta_stress_l
+
+```
+
+```{r}
+# fix the boruta object, split the training and test sets, train the model and then test the model on a single function
+CV_output<-fix_split_train_test(boruta_output_l = Boruta_stress_l,
+                                ps_object_l = ps_sp_l,
+                                variable_to_be_classified = "Stress" )
+
+     t1<-Sys.time()
+```
+
