@@ -108,7 +108,7 @@ boruta_output_stress<-  Boruta(Stress~.,   # classification to predict
                            ntree = 20000) # size of the forest 
 
 # It's a good practice to save  R objects that take a long time to compute so you don't have to re-run them later
-ggsave(boruta_output_stress, file = "./Results/boruta_output_stress.RData")
+save(boruta_output_stress, file = "./Results/boruta_output_stress.RData")
 
 ```
 
