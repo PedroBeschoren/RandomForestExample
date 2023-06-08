@@ -272,15 +272,15 @@ Boruta_stress_l<-lapply(ps_stress_l, function (x)
          data = single_physeq_to_borutaInput(physeq_object = x, # df you will give to boruta
                                              variable_to_be_classified = "Sp_full_name")[,-1],
          doTrace=2, 
-         maxRuns = 200,  # number fo iterations
-         ntree = 100000)) # size of the forest
+         maxRuns = 100,  # number fo iterations
+         ntree = 10000)) # size of the forest
 
 
 ```
 
 ```{r}
 # fix the boruta object, split training and test data, train the model, test the model 
-CV_output<-fix_stresslit_train_test(boruta_output_l = Boruta_stress_l,
+CV_output<-fix_split_train_test(boruta_output_l = Boruta_stress_l,
                                 ps_object_l = ps_stress_l,
                                 variable_to_be_classified = "Sp_full_name" )
 

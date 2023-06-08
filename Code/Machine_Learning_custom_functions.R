@@ -135,14 +135,14 @@ fix_split_train_test<-function (boruta_output_l, ps_object_l, variable_to_be_cla
     
     train.control <- caret::trainControl(method = "repeatedcv", # set trainig/data split controls for the train function
                                          number = 5,
-                                         repeats = 100,
+                                         repeats = 20,
                                          allowParallel = TRUE)
     
     model_borutized <- caret::train(form = z, # bruta formula
                                     data = x[[1]], # training data ; first element of train_and_test_spliter()
                                     method = "rf", #execute training based on RF
                                     trControl = train.control, # defined in trainControl() above
-                                    ntree=25000)
+                                    ntree=2500)
     
     
     
